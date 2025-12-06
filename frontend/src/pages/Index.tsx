@@ -16,7 +16,7 @@ import { MouseAura } from '@/components/MouseAura';
 const Index = () => {
   const [activeSection, setActiveSection] = useState('home');
   const [inputText, setInputText] = useState('');
-  const mockTasks = generateMockTasks();
+  const mockTasks = [];
 
   const {
     voiceState,
@@ -41,7 +41,7 @@ const Index = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background relative overflow-hidden flex flex-col">
+    <div className="h-screen bg-background relative overflow-hidden flex flex-col">
       {/* Constellation Background */}
       <StarryBackground />
       <MouseAura />
@@ -60,7 +60,7 @@ const Index = () => {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="h-full flex flex-col justify-center items-center max-w-4xl mx-auto"
+              className="h-full flex flex-col justify-center items-center max-w-4xl mx-auto pb-4"
             >
               <div className="text-center mb-12">
                 {/* Platform Logo */}

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 
 export type VoiceState = 'idle' | 'listening' | 'thinking' | 'responding';
 
@@ -15,14 +15,6 @@ interface VoiceInteractionReturn {
   simulateInteraction: (userMessage: string) => void;
 }
 
-/**
- * Hook para gerenciar interação por voz com o agente OCastro.
- * 
- * Pontos de integração:
- * - Implementar Web Speech API em startListening/stopListening
- * - Conectar com API do OCastro para processar comandos de voz
- * - Adicionar síntese de voz para respostas do agente
- */
 export const useVoiceInteraction = (): VoiceInteractionReturn => {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [lastUserMessage, setLastUserMessage] = useState('');
@@ -31,97 +23,165 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
     Array<{ role: 'user' | 'agent'; message: string; timestamp: Date }>
   >([]);
 
-  /**
-   * Inicia a captura de voz.
-   * 
-   * TODO: Integrar com Web Speech API
-   * ```
-   * const recognition = new webkitSpeechRecognition();
-   * recognition.continuous = false;
-   * recognition.lang = 'pt-BR';
-   * recognition.onresult = (event) => {
-   *   const transcript = event.results[0][0].transcript;
-   *   processVoiceCommand(transcript);
-   * };
-   * recognition.start();
-   * ```
-   */
-  const startListening = useCallback(() => {
-    setVoiceState('listening');
-    
-    // Simulação: após 3 segundos, muda para "thinking"
-    setTimeout(() => {
-      const mockUserMessage = 'Criar uma nova tarefa para revisar o código';
-      setLastUserMessage(mockUserMessage);
-      setConversationHistory(prev => [
-        ...prev,
-        { role: 'user', message: mockUserMessage, timestamp: new Date() }
-      ]);
-      setVoiceState('thinking');
-      
-      // Após "processar", responde
-      setTimeout(() => {
-        const mockAgentResponse = 'Tarefa "Revisar código" criada com sucesso na coluna Entrada. Defini prioridade média e data para hoje.';
-        setLastAgentMessage(mockAgentResponse);
-        setConversationHistory(prev => [
-          ...prev,
-          { role: 'agent', message: mockAgentResponse, timestamp: new Date() }
-        ]);
-        setVoiceState('responding');
-        
-        // Volta para idle após responder
-        setTimeout(() => {
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const playAudioResponse = (base64Audio: string) => {
+    try {
+      setVoiceState('responding');
+      const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
+      audio.onended = () => {
+        setVoiceState('idle');
+      };
+      audio.play();
+    } catch (e) {
+      console.error("Error playing audio", e);
+      setVoiceState('idle');
+    }
+  };
+
+  const startListening = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        setVoiceState('thinking');
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+
+        // Prepare Form Data
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'command.webm');
+
+        try {
+          // Get token from storage (assuming standard storage key)
+          const token = localStorage.getItem('token');
+          const headers: HeadersInit = {};
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+          }
+
+          // In dev environment, we might need to proxy or use full URL
+          const response = await fetch('http://localhost:5000/api/voice/command', {
+            method: 'POST',
+            headers: headers,
+            body: formData,
+          });
+
+          // Handle response
+          const data = await response.json();
+
+          // 1. Play Audio (Priority: even on error, if audio exists, play it)
+          if (data.audio_base64) {
+            playAudioResponse(data.audio_base64);
+          } else {
+            setVoiceState('idle');
+          }
+
+          // 2. Update Context/UI
+          if (data.success) {
+            // Update History on success
+            if (data.transcription) {
+              setLastUserMessage(data.transcription);
+              setConversationHistory(prev => [
+                ...prev,
+                { role: 'user', message: data.transcription, timestamp: new Date() }
+              ]);
+            }
+
+            if (data.message) {
+              setLastAgentMessage(data.message);
+              setConversationHistory(prev => [
+                ...prev,
+                { role: 'agent', message: data.message, timestamp: new Date() }
+              ]);
+            }
+          } else {
+            // Handle error messages
+            console.warn("Backend reported failure:", data.message);
+            if (data.message) {
+              setLastAgentMessage(data.message);
+            }
+          }
+
+        } catch (error) {
+          console.error("Error sending audio:", error);
           setVoiceState('idle');
-        }, 2000);
-      }, 1500);
-    }, 3000);
+        }
+
+        // Stop all tracks to release microphone
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setVoiceState('listening');
+
+    } catch (error) {
+      console.error("Error accessing microphone:", error);
+      alert("Não foi possível acessar o microfone. Verifique suas permissões.");
+      setVoiceState('idle');
+    }
   }, []);
 
   const stopListening = useCallback(() => {
-    setVoiceState('idle');
-    // TODO: Parar Web Speech API recognition
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      // State change to 'thinking' happens in onstop
+    }
   }, []);
 
-  /**
-   * Simula uma interação completa para testes.
-   * 
-   * TODO: Substituir por integração real com API do OCastro
-   * ```
-   * const response = await fetch('/api/ocastro/process', {
-   *   method: 'POST',
-   *   body: JSON.stringify({ message: userMessage }),
-   * });
-   * const data = await response.json();
-   * // data.intent: 'create_task' | 'move_task' | 'list_tasks' | etc.
-   * // data.response: string
-   * ```
-   */
-  const simulateInteraction = useCallback((userMessage: string) => {
+  const simulateInteraction = useCallback(async (userMessage: string) => {
     setVoiceState('thinking');
     setLastUserMessage(userMessage);
+
+    // Optimistic UI update
     setConversationHistory(prev => [
       ...prev,
       { role: 'user', message: userMessage, timestamp: new Date() }
     ]);
 
-    setTimeout(() => {
-      const responses = [
-        'Entendido! Vou organizar isso para você.',
-        'Tarefa adicionada ao seu quadro.',
-        'Pronto! O calendário foi atualizado.',
-        'Certo, movendo a tarefa para a próxima coluna.',
-      ];
-      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-      
-      setLastAgentMessage(randomResponse);
-      setConversationHistory(prev => [
-        ...prev,
-        { role: 'agent', message: randomResponse, timestamp: new Date() }
-      ]);
-      setVoiceState('responding');
+    try {
+      const token = localStorage.getItem('token');
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json'
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
 
-      setTimeout(() => setVoiceState('idle'), 2000);
-    }, 1500);
+      const response = await fetch('http://localhost:5000/api/voice/command', {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ text: userMessage }),
+      });
+
+      const data = await response.json();
+
+      if (data.message) {
+        setLastAgentMessage(data.message);
+        setConversationHistory(prev => [
+          ...prev,
+          { role: 'agent', message: data.message, timestamp: new Date() }
+        ]);
+
+        if (data.audio_base64) {
+          playAudioResponse(data.audio_base64);
+        } else {
+          setVoiceState('idle');
+        }
+      }
+    } catch (error) {
+      console.error("Text command error", error);
+      setVoiceState('idle');
+    }
   }, []);
 
   return {

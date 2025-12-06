@@ -7,9 +7,11 @@ import tempfile
 voice_bp = Blueprint('voice', __name__, url_prefix='/api/voice')
 
 @voice_bp.route('/command', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 def process_voice_command():
     current_user_id = get_jwt_identity()
+    if not current_user_id:
+        current_user_id = 1 # Fallback for testing/unauthenticated voice
     
     # Check if a file is present in the request
     if 'audio' in request.files:

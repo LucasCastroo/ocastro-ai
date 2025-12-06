@@ -17,7 +17,7 @@ interface NewTaskForm {
 }
 
 export const KanbanBoard = () => {
-  const [tasks, setTasks] = useState<Task[]>(generateMockTasks());
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newTask, setNewTask] = useState<NewTaskForm>({
     title: '',
@@ -33,7 +33,7 @@ export const KanbanBoard = () => {
     { id: 'concluida', title: 'Concluídas' },
   ];
 
-  const getTasksByStatus = (status: TaskStatus) => 
+  const getTasksByStatus = (status: TaskStatus) =>
     tasks.filter(task => task.status === status);
 
   const handleCreateTask = () => {
@@ -78,7 +78,7 @@ export const KanbanBoard = () => {
    */
 
   return (
-    <motion.div 
+    <motion.div
       className="glass rounded-2xl p-6 neon-border"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -90,7 +90,7 @@ export const KanbanBoard = () => {
           <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
           <h2 className="text-lg font-semibold text-foreground">Quadro de Tarefas</h2>
         </div>
-        <Button 
+        <Button
           onClick={() => setIsModalOpen(true)}
           className="gap-2"
           size="sm"
@@ -131,7 +131,7 @@ export const KanbanBoard = () => {
             >
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-lg font-semibold text-foreground">Nova Tarefa</h3>
-                <button 
+                <button
                   onClick={() => setIsModalOpen(false)}
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
@@ -206,7 +206,7 @@ export const KanbanBoard = () => {
                   />
                 </div>
 
-                <Button 
+                <Button
                   onClick={handleCreateTask}
                   className="w-full mt-4"
                   disabled={!newTask.title.trim()}

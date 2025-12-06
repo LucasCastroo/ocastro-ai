@@ -15,7 +15,7 @@ def create_app(config_name='default'):
     migrate.init_app(app, db)
     jwt.init_app(app)
     # Enable CORS for frontend URL
-    cors.init_app(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
+    cors.init_app(app, resources={r"/api/*": {"origins": "*"}})
 
     # Register blueprints
     app.register_blueprint(auth_bp)
