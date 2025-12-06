@@ -1,0 +1,10 @@
+Flask
+Flask-SQLAlchemy
+Flask-Migrate
+Flask-Cors
+Flask-JWT-Extended
+python-dotenv
+marshmallow
+SpeechRecognition
+gTTS
+pydub
