@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X } from 'lucide-react';
 import { Task, TaskStatus, TaskPriority, generateMockTasks } from '@/types/task';
@@ -18,6 +18,47 @@ interface NewTaskForm {
 
 export const KanbanBoard = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
+
+  useEffect(() => {
+    fetchTasks();
+  }, []);
+
+  const fetchTasks = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers: HeadersInit = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const response = await fetch('http://localhost:5000/api/tasks', {
+        headers: headers
+      });
+      if (response.ok) {
+        const data = await response.json();
+        // Backend returns simplified task objects, might need mapping if types differ heavily
+        // Assuming data is array of tasks compatible with Task interface
+        // If data is { tasks: [...] }, adjust accordingly. 
+        // Based on typical Flask-Marshmallow, it's usually a list or paginated object.
+        // Let's assume list for now based on previous code context.
+        if (Array.isArray(data)) {
+          // Map backend fields to frontend if needed (e.g. snake_case to camelCase)
+          const mappedTasks: Task[] = data.map((t: any) => ({
+            id: t.id.toString(),
+            title: t.title,
+            description: t.description,
+            status: t.status, // Ensure enum matches
+            priority: t.priority,
+            dueDate: new Date(t.due_date),
+            createdAt: new Date(t.created_at)
+          }));
+          setTasks(mappedTasks);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch tasks:", error);
+    }
+  };
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newTask, setNewTask] = useState<NewTaskForm>({
     title: '',

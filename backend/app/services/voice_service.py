@@ -12,11 +12,23 @@ class VoiceService:
     try:
         from pydub import AudioSegment
         import shutil
-        if not shutil.which("ffmpeg"):
-            # Path found via agent discovery
-            ffmpeg_path = r"C:\Users\lucas\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
-            if os.path.exists(ffmpeg_path):
-                AudioSegment.converter = ffmpeg_path
+        
+        # Path found via agent discovery
+        ffmpeg_dir = r"C:\Users\lucas\AppData\Local\Microsoft\WinGet\Links"
+        ffmpeg_exe = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+        ffprobe_exe = os.path.join(ffmpeg_dir, "ffprobe.exe")
+        
+        if os.path.exists(ffmpeg_exe):
+            # Add to PATH so subprocess calls work
+            if ffmpeg_dir not in os.environ["PATH"]:
+                os.environ["PATH"] += os.pathsep + ffmpeg_dir
+            
+            # Explicitly set for pydub just in case
+            AudioSegment.converter = ffmpeg_exe
+            # pydub might check for ffprobe too
+            if os.path.exists(ffprobe_exe):
+                AudioSegment.ffprobe = ffprobe_exe
+                
     except ImportError:
         pass
 
@@ -27,23 +39,31 @@ class VoiceService:
         # Convert to WAV if necessary (SpeechRecognition prefers WAV)
         # Using pydub to handle conversion
         try:
+            print(f"DEBUG: Processing audio file at {audio_file_path}")
             # Load audio (pydub handles many formats if ffmpeg is installed)
             audio = AudioSegment.from_file(audio_file_path)
+            print(f"DEBUG: Audio loaded successfully. Duration: {len(audio)}ms")
             
             # Export to specific WAV format for SpeechRecognition
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
                 audio.export(temp_wav.name, format="wav")
                 wav_path = temp_wav.name
+            print(f"DEBUG: Exported to temporary WAV at {wav_path}")
                 
             with sr.AudioFile(wav_path) as source:
+                print("DEBUG: Reading audio source for recognition...")
                 audio_data = recognizer.record(source)
                 try:
                     # Using Google's free speech recognition
+                    print("DEBUG: Sending to Google Speech Recognition...")
                     text = recognizer.recognize_google(audio_data, language="pt-BR")
+                    print(f"DEBUG: Transcription result: {text}")
                     return text
                 except sr.UnknownValueError:
+                    print("DEBUG: Google Speech Recognition could not understand audio")
                     return None
-                except sr.RequestError:
+                except sr.RequestError as e:
+                    print(f"DEBUG: Could not request results from Google Speech Recognition service; {e}")
                     return None
             
             # Cleanup temp wav
@@ -54,6 +74,8 @@ class VoiceService:
                 
         except Exception as e:
             print(f"Error processing audio: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     @staticmethod
@@ -106,6 +128,7 @@ class VoiceService:
         from app.models.task import Task
         from app.extensions import db
         import re
+        from datetime import timedelta
 
         text = text.lower()
         response_text = ""
@@ -137,7 +160,7 @@ class VoiceService:
                 response_text = "Entendi que você quer criar uma tarefa, mas não ouvi o título. Tente dizer 'Nova tarefa comprar pão'."
 
         # 2. LIST TASKS (TODAY)
-        elif "hoje" in text and ("tarefas" in text or "agenda" in text):
+        elif "hoje" in text and ("tarefas" in text or "agenda" in text) and "mudar" not in text:
             intent = "list_today_tasks"
             tasks = Task.query.filter_by(user_id=user_id, due_date=date.today()).all()
             count = len(tasks)
@@ -153,11 +176,7 @@ class VoiceService:
         # Pattern: "concluir tarefa [titulo]" or "marcar [titulo] como feita"
         elif "concluir" in text or "terminar" in text or "feita" in text:
             intent = "complete_task"
-            # Try to find a task title in the command
-            # This is simple/naive: assumes the task title is mentioned
-            # A better approach searches for the task by fuzzy matching, but let's do direct search first
             
-            # Get all user unfinished tasks to compare
             pending_tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).all()
             
             found = False
@@ -188,6 +207,80 @@ class VoiceService:
             
             if not found:
                 response_text = "Não encontrei essa tarefa na Entrada para iniciar."
+
+        # 5. UPDATE DATE (NEW)
+        elif "mudar" in text or "alterar" in text or "prazo" in text or "para o dia" in text:
+            intent = "update_task_date"
+            
+            # Find the task first
+            pending_tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).all()
+            target_task = None
+            for task in pending_tasks:
+                if task.title.lower() in text:
+                    target_task = task
+                    break
+            
+            if target_task:
+                new_date = None
+                
+                # Check for "amanhã" or "hoje"
+                if "amanhã" in text:
+                    new_date = date.today() + timedelta(days=1)
+                elif "hoje" in text:
+                    new_date = date.today()
+                else:
+                    # Regex for "dia X" or "dia X de [mes]"
+                    # Mapping months
+                    months = {
+                        "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
+                        "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
+                    }
+                    
+                    # Try explicit date pattern: "dia 7 de dezembro"
+                    date_match = re.search(r'dia\s+(\d+)\s+de\s+(\w+)', text)
+                    if date_match:
+                        day = int(date_match.group(1))
+                        month_name = date_match.group(2)
+                        month = months.get(month_name)
+                        if month:
+                            # Assuming current year if month is ahead, or next year if month is passed? 
+                            # Simplification: use current year, or next year if date passed
+                            today = date.today()
+                            year = today.year
+                            try:
+                                candidate_date = date(year, month, day)
+                                if candidate_date < today:
+                                    candidate_date = date(year + 1, month, day)
+                                new_date = candidate_date
+                            except ValueError:
+                                pass
+                    
+                    if not new_date:
+                        # Try just "dia X"
+                        date_match_simple = re.search(r'dia\s+(\d+)', text)
+                        if date_match_simple:
+                            day = int(date_match_simple.group(1))
+                            today = date.today()
+                            # Use current month or next month logic could be complex, assume current month/next match
+                            try:
+                                candidate_date = date(today.year, today.month, day)
+                                if candidate_date < today:
+                                    # Try next month
+                                    next_month = today.month + 1 if today.month < 12 else 1
+                                    next_year = today.year if today.month < 12 else today.year + 1
+                                    candidate_date = date(next_year, next_month, day)
+                                new_date = candidate_date
+                            except ValueError:
+                                pass
+
+                if new_date:
+                    target_task.due_date = new_date
+                    db.session.commit()
+                    response_text = f"Atualizei a data da tarefa {target_task.title} para {new_date.strftime('%d/%m')}."
+                else:
+                    response_text = f"Encontrei a tarefa {target_task.title}, mas não entendi a nova data."
+            else:
+                response_text = "Não encontrei a tarefa que você quer alterar."
 
         else:
             intent = "unknown"
