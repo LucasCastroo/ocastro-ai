@@ -79,8 +79,18 @@ class VoiceService:
             return None
 
     @staticmethod
+    def _ensure_site_packages():
+        # Ensure user site-packages are in path (fix for edge-tts in some envs)
+        import site
+        import sys
+        usersite = site.getusersitepackages()
+        if usersite not in sys.path:
+            sys.path.append(usersite)
+
+    @staticmethod
     def _generate_audio_response(text):
         try:
+            VoiceService._ensure_site_packages()
             import edge_tts
             import asyncio
             
@@ -117,9 +127,19 @@ class VoiceService:
                 from gtts import gTTS
                 print("Falling back to gTTS (Female)")
                 tts = gTTS(text=text, lang='pt', slow=False)
-                # ... (rest of gTTS logic could be here, but simpler to just return None or try minimal fallback)
-                # Let's keep it simple: return None so user sees error or try strict gTTS fallback inline
-                return None 
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_mp3:
+                    tts.save(temp_mp3.name)
+                    temp_path = temp_mp3.name
+                
+                with open(temp_path, "rb") as audio_file:
+                    audio_bytes = audio_file.read()
+                    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                return audio_base64
             except:
                 return None
 
@@ -135,29 +155,116 @@ class VoiceService:
         intent = "unknown"
         data = None
         
+        # Helper to parse date from text
+        def parse_date_from_text(input_text):
+            parsed_date = None
+            if "amanhã" in input_text:
+                parsed_date = date.today() + timedelta(days=1)
+            elif "hoje" in input_text:
+                parsed_date = date.today()
+            else:
+                months = {
+                    "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
+                    "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
+                }
+                # "dia 7 de dezembro"
+                date_match = re.search(r'dia\s+(\d+)\s+de\s+(\w+)', input_text)
+                if date_match:
+                    try:
+                        day = int(date_match.group(1))
+                        month = months.get(date_match.group(2))
+                        if month:
+                            today = date.today()
+                            year = today.year
+                            candidate = date(year, month, day)
+                            if candidate < today: candidate = date(year + 1, month, day)
+                            parsed_date = candidate
+                    except: pass
+                
+                if not parsed_date:
+                    # "dia 7"
+                    date_match_simple = re.search(r'dia\s+(\d+)', input_text)
+                    if date_match_simple:
+                        try:
+                            day = int(date_match_simple.group(1))
+                            today = date.today()
+                            parsed_date = date(today.year, today.month, day)
+                            if parsed_date < today:
+                                if today.month == 12: parsed_date = date(today.year + 1, 1, day)
+                                else: parsed_date = date(today.year, today.month + 1, day)
+                        except: pass
+            return parsed_date
+
         # --- Intent Logic ---
 
         # 1. CREATE TASK
-        # Pattern: "nova tarefa [titulo]" or "adicionar tarefa [titulo]"
+        # Pattern: "nova tarefa [titulo] [metadata]"
         if "nova tarefa" in text or "adicionar tarefa" in text or "criar tarefa" in text:
             intent = "create_task"
-            # Extract title (everything after the keyword)
+            
+            # Default values
+            task_priority = 'media'
+            task_due_date = date.today()
+            
+            # 1. Extract Priority
+            priorities = {
+                'alta': ['alta', 'urgente', 'importante'],
+                'baixa': ['baixa', 'pouca'],
+                'media': ['média', 'media', 'normal']
+            }
+            
+            # Check for priority keywords and remove them from text to allow title extraction
+            found_p = False
+            for p_key, keywords in priorities.items():
+                for kw in keywords:
+                    if f"prioridade {kw}" in text or f"com {kw} prioridade" in text:
+                        task_priority = p_key
+                        # Remove content like "com baixa prioridade" or "prioridade baixa" from text
+                        text = re.sub(f'(com )?prioridade {kw}', '', text)
+                        text = re.sub(f'com {kw} prioridade', '', text)
+                        found_p = True
+                        break
+                if found_p: break
+            
+            # 2. Extract Date (Deadline) within creation
+            # Look for "para amanhã", "com prazo de até amanhã", "para o dia X"
+            if "prazo" in text or "para" in text or "até" in text:
+                # Attempt to extract date part
+                # Heuristic: if we find date keywords, try to parse and remove
+                extracted_date = parse_date_from_text(text)
+                if extracted_date:
+                    task_due_date = extracted_date
+                    # Try to clean up text. This is harder because date phrases vary.
+                    # We'll rely on the regex below to capture the title part mostly.
+                    # Simple cleanup for common phrases:
+                    text = re.sub(r'(com )?prazo (de )?(até )?(amanhã|hoje)', '', text)
+                    text = re.sub(r'para (amanhã|hoje)', '', text)
+                    text = re.sub(r'(com )?prazo (de )?até o dia \d+( de \w+)?', '', text)
+                    # Note: imperfect removal but helps.
+            
+            # 3. Extract Title
+            # After removal, extract what's left after the command trigger
             match = re.search(r'(nova tarefa|adicionar tarefa|criar tarefa)\s+(.+)', text)
             if match:
-                title = match.group(2).capitalize()
+                raw_title = match.group(2).strip()
+                # Clean up any trailing connection words
+                title = re.sub(r'\s+(com|para)$', '', raw_title).capitalize()
+                
                 new_task = Task(
                     title=title,
                     user_id=user_id,
-                    status=TaskStatus.ENTRADA, # Default to Inbox/Entrada
-                    priority='media',
-                    due_date=date.today()
+                    status=TaskStatus.ENTRADA, 
+                    priority=task_priority,
+                    due_date=task_due_date
                 )
                 db.session.add(new_task)
                 db.session.commit()
-                response_text = f"Certo. Criei a tarefa {title} na sua área de entrada."
+                
+                date_str = "hoje" if task_due_date == date.today() else task_due_date.strftime('%d/%m')
+                response_text = f"Criei a tarefa {title} com prioridade {task_priority} para {date_str}."
                 data = {"task_id": new_task.id, "title": new_task.title}
             else:
-                response_text = "Entendi que você quer criar uma tarefa, mas não ouvi o título. Tente dizer 'Nova tarefa comprar pão'."
+                response_text = "Entendi que você quer criar uma tarefa, mas não ouvi o título claramente."
 
         # 2. LIST TASKS (TODAY)
         elif "hoje" in text and ("tarefas" in text or "agenda" in text) and "mudar" not in text:

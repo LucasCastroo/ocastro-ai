@@ -50,7 +50,7 @@ const Index = () => {
       <div className="fixed inset-0 pointer-events-none bg-gradient-radial from-transparent via-background/50 to-background opacity-80" />
 
       {/* Main Content Area */}
-      <main className="flex-1 container mx-auto px-4 py-8 pb-32 relative z-10">
+      <main className="flex-1 container mx-auto px-4 py-8 pb-32 relative z-10 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
         <AnimatePresence mode="wait">
 
           {/* HOME SECTION */}

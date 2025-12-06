@@ -7,25 +7,34 @@ interface ColumnProps {
   id: TaskStatus;
   title: string;
   tasks: Task[];
+  onTaskClick: (task: Task) => void;
+  onDelete: (taskId: string) => void;
 }
 
 const columnConfig: Record<TaskStatus, { icon: React.ReactNode; color: string }> = {
-  entrada: { 
-    icon: <Inbox className="w-5 h-5" />, 
-    color: 'text-blue-400' 
+  entrada: {
+    icon: <Inbox className="w-5 h-5" />,
+    color: 'text-blue-400'
   },
-  fazendo: { 
-    icon: <Clock className="w-5 h-5" />, 
-    color: 'text-yellow-400' 
+  fazendo: {
+    icon: <Clock className="w-5 h-5" />,
+    color: 'text-yellow-400'
   },
-  concluida: { 
-    icon: <CheckCircle2 className="w-5 h-5" />, 
-    color: 'text-green-400' 
+  concluida: {
+    icon: <CheckCircle2 className="w-5 h-5" />,
+    color: 'text-green-400'
   },
 };
 
-export const Column = ({ id, title, tasks }: ColumnProps) => {
+import { useDroppable } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+
+export const Column = ({ id, title, tasks, onTaskClick, onDelete }: ColumnProps) => {
   const config = columnConfig[id];
+
+  const { setNodeRef } = useDroppable({
+    id: id,
+  });
 
   return (
     <motion.div
@@ -43,22 +52,32 @@ export const Column = ({ id, title, tasks }: ColumnProps) => {
       </div>
 
       {/* Tasks Container */}
-      <div 
-        className="space-y-3 min-h-[200px] p-2 rounded-xl bg-muted/20"
-        // TODO: Área de drop para drag-and-drop
-        // onDragOver={(e) => e.preventDefault()}
-        // onDrop={(e) => handleDrop(e, id)}
+      <SortableContext
+        id={id}
+        items={tasks.map(t => t.id)}
+        strategy={verticalListSortingStrategy}
       >
-        {tasks.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            <p>Nenhuma tarefa</p>
-          </div>
-        ) : (
-          tasks.map((task, index) => (
-            <TaskCard key={task.id} task={task} index={index} />
-          ))
-        )}
-      </div>
+        <div
+          ref={setNodeRef}
+          className="space-y-3 min-h-[200px] p-2 rounded-xl bg-muted/20"
+        >
+          {tasks.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground text-sm">
+              <p>Nenhuma tarefa</p>
+            </div>
+          ) : (
+            tasks.map((task, index) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                index={index}
+                onClick={onTaskClick}
+                onDelete={onDelete}
+              />
+            ))
+          )}
+        </div>
+      </SortableContext>
     </motion.div>
   );
 };
