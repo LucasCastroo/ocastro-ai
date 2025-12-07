@@ -266,7 +266,23 @@ class VoiceService:
             else:
                 response_text = "Entendi que você quer criar uma tarefa, mas não ouvi o título claramente."
 
-        # 2. LIST TASKS (TODAY)
+        # 2a. LIST ALL TASKS
+        elif "todas" in text and "tarefas" in text:
+            intent = "list_all_tasks"
+            # Get pending tasks first
+            tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).order_by(Task.due_date).limit(5).all()
+            count = len(tasks)
+            total_count = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).count()
+            
+            if count > 0:
+                task_titles = ", ".join([t.title for t in tasks])
+                response_text = f"Você tem {total_count} tarefas pendentes no total. As próximas são: {task_titles}."
+            else:
+                response_text = "Você não tem nenhuma tarefa pendente."
+            
+            data = {"count": total_count, "tasks": [t.title for t in tasks]}
+
+        # 2b. LIST TASKS (TODAY)
         elif "hoje" in text and ("tarefas" in text or "agenda" in text) and "mudar" not in text:
             intent = "list_today_tasks"
             tasks = Task.query.filter_by(user_id=user_id, due_date=date.today()).all()
@@ -278,6 +294,20 @@ class VoiceService:
                 response_text = "Você não tem nenhuma tarefa agendada para hoje."
             
             data = {"count": count, "tasks": [t.title for t in tasks]}
+
+        # 2c. DELETE LAST TASK
+        elif "excluir" in text and ("última" in text or "ultima" in text):
+             intent = "delete_last_task"
+             # Find the most recently created task
+             last_task = Task.query.filter_by(user_id=user_id).order_by(Task.created_at.desc()).first()
+             
+             if last_task:
+                 db.session.delete(last_task)
+                 db.session.commit()
+                 response_text = f"Excluí a última tarefa criada: {last_task.title}."
+                 data = {"deleted_task_id": last_task.id}
+             else:
+                 response_text = "Não encontrei nenhuma tarefa para excluir."
 
         # 3. COMPLETE TASK
         # Pattern: "concluir tarefa [titulo]" or "marcar [titulo] como feita"
@@ -315,7 +345,66 @@ class VoiceService:
             if not found:
                 response_text = "Não encontrei essa tarefa na Entrada para iniciar."
 
-        # 5. UPDATE DATE (NEW)
+        # 5. CHANGE STATUS (NEW)
+        elif "status" in text and ("mudar" in text or "alterar" in text or "definir" in text):
+            intent = "update_task_status"
+            
+            # 1. Determine Target Status
+            new_status = None
+            status_label = ""
+            
+            if "andamento" in text or "fazendo" in text or "progresso" in text:
+                new_status = TaskStatus.FAZENDO
+                status_label = "Em Andamento"
+            elif "concluída" in text or "concluida" in text or "feita" in text or "terminada" in text:
+                new_status = TaskStatus.CONCLUIDA
+                status_label = "Concluída"
+            elif "entrada" in text or "pendente" in text or "fazer" in text:
+                new_status = TaskStatus.ENTRADA
+                status_label = "Entrada"
+                
+            if new_status:
+                # 2. Extract Task Title
+                clean_text = text
+                # Remove command verbs
+                clean_text = re.sub(r'(altere|mudar|definir) o status (da|de) (tarefa )?', '', clean_text)
+                # Remove target status phrases
+                clean_text = re.sub(r'para (em )?andamento', '', clean_text)
+                clean_text = re.sub(r'para (fazendo|feita|concluída|concluida|terminada|entrada|pendente)', '', clean_text)
+                
+                possible_title = clean_text.strip()
+                
+                # 3. Find and Update Task
+                all_tasks = Task.query.filter_by(user_id=user_id).all()
+                target_task = None
+                
+                # Search strategy: exact > task_in_speech > speech_in_task
+                for task in all_tasks:
+                   if task.title.lower() == possible_title:
+                       target_task = task
+                       break
+                
+                if not target_task:
+                    for task in all_tasks:
+                        # If the spoken title is part of the real title (e.g. "revisar" for "revisar código")
+                        if possible_title and possible_title in task.title.lower() and len(possible_title) > 3:
+                            target_task = task
+                            break
+                        # If the real title is in the speech (reverse case, less likely here due to stripping)
+                        if task.title.lower() in possible_title:
+                            target_task = task
+                            break
+                            
+                if target_task:
+                    target_task.status = new_status
+                    db.session.commit()
+                    response_text = f"Entendido. Mudei o status de {target_task.title} para {status_label}."
+                else:
+                    response_text = f"Não encontrei a tarefa referente a '{possible_title}'."
+            else:
+                response_text = "Entendi que quer mudar o status, mas para qual? Você pode dizer: fazendo, concluída ou entrada."
+
+        # 6. UPDATE DATE
         elif "mudar" in text or "alterar" in text or "prazo" in text or "para o dia" in text:
             intent = "update_task_date"
             
@@ -379,7 +468,6 @@ class VoiceService:
                                 new_date = candidate_date
                             except ValueError:
                                 pass
-
                 if new_date:
                     target_task.due_date = new_date
                     db.session.commit()
@@ -388,6 +476,109 @@ class VoiceService:
                     response_text = f"Encontrei a tarefa {target_task.title}, mas não entendi a nova data."
             else:
                 response_text = "Não encontrei a tarefa que você quer alterar."
+
+        # 7. DELETE TASK
+        elif "excluir" in text or "deletar" in text or "remover" in text:
+            intent = "delete_task"
+            
+            # Clean text to isolate title
+            # "excluir tarefa de lançar frequência" -> "lançar frequência"
+            clean_text = text
+            clean_text = re.sub(r'(excluir|deletar|remover) (a )?tarefa (de )?', '', clean_text)
+            
+            possible_title = clean_text.strip()
+            
+            if possible_title:
+                all_tasks = Task.query.filter_by(user_id=user_id).all()
+                target_task = None
+                
+                # Search strategy same as update status
+                for task in all_tasks:
+                   if task.title.lower() == possible_title:
+                       target_task = task
+                       break
+                
+                if not target_task:
+                    for task in all_tasks:
+                        if possible_title in task.title.lower() and len(possible_title) > 3:
+                            target_task = task
+                            break
+                        if task.title.lower() in possible_title:
+                            target_task = task
+                            break
+                            
+                if target_task:
+                    db.session.delete(target_task)
+                    db.session.commit()
+                    response_text = f"Entendido. Excluí a tarefa {target_task.title}."
+                    # Return deleted task id for frontend if needed
+                    data = {"deleted_task_id": target_task.id}
+                else:
+                    response_text = f"Não encontrei nenhuma tarefa parecida com '{possible_title}' para excluir."
+            else:
+                response_text = "Qual tarefa você quer excluir? Diga o nome dela."
+
+        # 8. UPDATE TITLE (NEW)
+        elif "título" in text and ("alterar" in text or "mudar" in text or "definir" in text or "trocar" in text):
+            intent = "update_task_title"
+            
+            # Example text: "na tarefa de desenvolvimento do projeto altere o título para projeto de desenvolvimento do conselho de educação"
+            # Strategy: Split by "altere o título para" or similar separator
+            
+            separator_match = re.search(r'(altere|mudar|trocar|definir) o t[íi]tulo para', text)
+            
+            if separator_match:
+                # Part 1: Before the command (Context about which task)
+                # Part 2: After the command (New title)
+                parts = text.split(separator_match.group(0))
+                
+                if len(parts) >= 2:
+                    context_part = parts[0].strip() # "na tarefa de desenvolvimento do projeto"
+                    new_title = parts[1].strip()   # "projeto de desenvolvimento do conselho de educação"
+                    
+                    # Clean context to find old title
+                    old_possible_title = context_part
+                    old_possible_title = re.sub(r'^(na|da) tarefa (de )?', '', old_possible_title)
+                    old_possible_title = re.sub(r'^(no|do) item (de )?', '', old_possible_title)
+                    old_possible_title = old_possible_title.strip()
+                    
+                    if old_possible_title and new_title:
+                        all_tasks = Task.query.filter_by(user_id=user_id).all()
+                        target_task = None
+                        
+                        # Find task
+                        for task in all_tasks:
+                            if task.title.lower() == old_possible_title:
+                                target_task = task
+                                break
+                        
+                        if not target_task:
+                            for task in all_tasks:
+                                if old_possible_title in task.title.lower() and len(old_possible_title) > 3:
+                                    target_task = task
+                                    break
+                        
+                        if target_task:
+                            old_name = target_task.title
+                            target_task.title = new_title.capitalize()
+                            db.session.commit()
+                            response_text = f"Entendido. Renomeei a tarefa '{old_name}' para '{target_task.title}'."
+                            data = {"task_id": target_task.id, "new_title": target_task.title}
+                        else:
+                            response_text = f"Não encontrei a tarefa '{old_possible_title}' para renomear."
+                    else:
+                        response_text = "Não consegui identificar o nome antigo ou o novo nome da tarefa."
+                else:
+                    response_text = "Tente dizer: Na tarefa X mude o título para Y."
+            else:
+                 response_text = "Para mudar o nome, diga: Na tarefa X altere o título para Y."
+
+
+
+        # 9. SELF IDENTIFICATION
+        elif "seu nome" in text or "quem é você" in text or "quem voce" in text or "apresente" in text or "sua capacidade" in text:
+             intent = "identity"
+             response_text = "Eu sou o OCastro, seu agente pessoal inteligente. Eu posso ajudar você a organizar suas tarefas, criar lembretes, listar seus compromissos e muito mais. Basta me dizer o que precisa!"
 
         else:
             intent = "unknown"

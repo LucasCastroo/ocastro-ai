@@ -45,6 +45,7 @@ export const NeuralInteraction = ({
         )}
 
         {/* Deep Glow background */}
+        {/* Deep Glow background */}
         <motion.div
           className="absolute inset-0 bg-primary/40 blur-[80px] rounded-full"
           animate={{
@@ -55,7 +56,19 @@ export const NeuralInteraction = ({
         />
 
         {/* The Coded Orb (Logo Inspired) */}
-        <div className="relative z-10 w-48 h-48 md:w-64 md:h-64 flex items-center justify-center">
+        <motion.div
+          className="relative z-10 w-48 h-48 md:w-64 md:h-64 flex items-center justify-center"
+          animate={{
+            scale: voiceState === 'responding'
+              ? [1, 1.02, 1.08, 1.03, 1.06, 1.01, 1.04, 1]
+              : 1,
+          }}
+          transition={{
+            duration: 0.6,
+            repeat: voiceState === 'responding' ? Infinity : 0,
+            ease: "easeInOut"
+          }}
+        >
 
           {/* Outer Spinning Rings */}
           <motion.div
@@ -130,17 +143,30 @@ export const NeuralInteraction = ({
             </motion.g>
 
             {/* Pulse Circle for Voice State */}
-            {voiceState === 'listening' && (
+            {(voiceState === 'listening' || voiceState === 'responding') && (
               <motion.circle
                 cx="100"
                 cy="100"
                 r="45"
-                stroke="hsl(var(--primary))"
+                stroke={voiceState === 'listening' ? "hsl(var(--primary))" : "hsl(var(--secondary))"}
                 strokeWidth="2"
                 fill="none"
                 initial={{ scale: 0.8, opacity: 0.5 }}
                 animate={{ scale: 1.4, opacity: 0 }}
-                transition={{ duration: 1.5, repeat: Infinity }}
+                transition={{ duration: voiceState === 'listening' ? 1.5 : 1, repeat: Infinity }}
+              />
+            )}
+            {voiceState === 'responding' && (
+              <motion.circle
+                cx="100"
+                cy="100"
+                r="40"
+                stroke="hsl(var(--accent))"
+                strokeWidth="1.5"
+                fill="none"
+                initial={{ scale: 0.8, opacity: 0.5 }}
+                animate={{ scale: 1.2, opacity: 0 }}
+                transition={{ duration: 1.2, repeat: Infinity, delay: 0.3 }}
               />
             )}
           </svg>
@@ -149,7 +175,7 @@ export const NeuralInteraction = ({
           <div className="absolute inset-0 flex items-center justify-center text-white/80 mix-blend-overlay">
             <VoiceButton voiceState={voiceState} onToggle={() => { }} minimal />
           </div>
-        </div>
+        </motion.div>
       </div>
 
       {/* Live Transcription / Last Message Display */}
@@ -170,6 +196,6 @@ export const NeuralInteraction = ({
         )}
       </div>
 
-    </div>
+    </div >
   );
 };

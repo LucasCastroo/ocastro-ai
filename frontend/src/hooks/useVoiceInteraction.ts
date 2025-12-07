@@ -13,12 +13,16 @@ interface VoiceInteractionReturn {
   startListening: () => void;
   stopListening: () => void;
   simulateInteraction: (userMessage: string) => void;
+  lastIntent: string | null;
+  lastData: any | null;
 }
 
 export const useVoiceInteraction = (): VoiceInteractionReturn => {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [lastUserMessage, setLastUserMessage] = useState('');
   const [lastAgentMessage, setLastAgentMessage] = useState('');
+  const [lastIntent, setLastIntent] = useState<string | null>(null);
+  const [lastData, setLastData] = useState<any | null>(null);
   const [conversationHistory, setConversationHistory] = useState<
     Array<{ role: 'user' | 'agent'; message: string; timestamp: Date }>
   >([]);
@@ -104,6 +108,9 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
                 { role: 'agent', message: data.message, timestamp: new Date() }
               ]);
             }
+
+            if (data.intent) setLastIntent(data.intent);
+            if (data.data) setLastData(data.data);
           } else {
             // Handle error messages
             console.warn("Backend reported failure:", data.message);
@@ -172,6 +179,9 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
           { role: 'agent', message: data.message, timestamp: new Date() }
         ]);
 
+        if (data.intent) setLastIntent(data.intent);
+        if (data.data) setLastData(data.data);
+
         if (data.audio_base64) {
           playAudioResponse(data.audio_base64);
         } else {
@@ -195,5 +205,7 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
     startListening,
     stopListening,
     simulateInteraction,
+    lastIntent,
+    lastData
   };
 };

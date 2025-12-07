@@ -1,11 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { NeuralInteraction } from '@/components/NeuralInteraction';
 import { KanbanBoard } from '@/components/KanbanBoard/KanbanBoard';
 import { CalendarView } from '@/components/Calendar/CalendarView';
 import { BottomNavigation } from '@/components/BottomNavigation';
 import { useVoiceInteraction } from '@/hooks/useVoiceInteraction';
-import { generateMockTasks } from '@/types/task';
 import { SendHorizontal } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -17,13 +16,26 @@ const Index = () => {
   const [activeSection, setActiveSection] = useState('home');
   const [inputText, setInputText] = useState('');
   const mockTasks = [];
+  const scrollAnchorRef = useRef<HTMLDivElement>(null);
 
   const {
     voiceState,
     conversationHistory,
     startListening,
     stopListening,
+    simulateInteraction,
+    lastIntent
   } = useVoiceInteraction();
+
+  // Navigate based on Voice Intents
+  useEffect(() => {
+    if (lastIntent === 'list_today_tasks' || lastIntent === 'list_all_tasks') {
+      setActiveSection('tarefas');
+    }
+  }, [lastIntent]);
+
+  // State to control layout mode: 'centered' (default/voice) vs 'chat' (text interaction)
+  const [isChatMode, setIsChatMode] = useState(false);
 
   const handleVoiceToggle = () => {
     if (voiceState === 'idle') {
@@ -35,10 +47,16 @@ const Index = () => {
 
   const handleSendMessage = () => {
     if (!inputText.trim()) return;
-    // Here we would call the actual API text endpoint
-    console.log("Sending text:", inputText);
+    setIsChatMode(true); // Switch to chat mode on text input
+    simulateInteraction(inputText);
     setInputText('');
   };
+
+  useEffect(() => {
+    if (scrollAnchorRef.current) {
+      scrollAnchorRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [conversationHistory]);
 
   return (
     <div className="h-screen bg-background relative overflow-hidden flex flex-col">
@@ -50,50 +68,92 @@ const Index = () => {
       <div className="fixed inset-0 pointer-events-none bg-gradient-radial from-transparent via-background/50 to-background opacity-80" />
 
       {/* Main Content Area */}
-      <main className="flex-1 container mx-auto px-4 py-8 pb-32 relative z-10 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+      <main className="flex-1 container mx-auto px-4 py-4 pb-0 relative z-10 overflow-hidden flex flex-col">
         <AnimatePresence mode="wait">
 
           {/* HOME SECTION */}
           {activeSection === 'home' && (
             <motion.div
               key="home"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="h-full flex flex-col justify-center items-center max-w-4xl mx-auto pb-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className={`flex-1 flex flex-col w-full h-full transition-all duration-700 ease-in-out ${isChatMode ? 'justify-between' : 'justify-center items-center'
+                }`}
             >
-              <div className="text-center mb-12">
-                {/* Platform Logo */}
+              <div className={`flex flex-col items-center transition-all duration-700 ${isChatMode ? 'flex-shrink-0' : 'flex-1 justify-center'}`}>
+
+                {/* Header - Dynamically positioned */}
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.2 }}
-                  className="mb-6 flex justify-center"
+                  layout
+                  className="text-center mb-2 flex-shrink-0"
+                  animate={{
+                    scale: isChatMode ? 0.8 : 1,
+                    opacity: isChatMode ? 0.8 : 1
+                  }}
                 >
-                  <div className="w-16 h-16 md:w-20 md:h-20 rounded-2xl overflow-hidden shadow-[0_0_30px_rgba(168,85,247,0.3)]">
-                    <img src="/logo.jpg" alt="OCastro Logo" className="w-full h-full object-cover" />
+                  {/* Platform Logo */}
+                  <div className="mt-2 mb-2 flex justify-center">
+                    <div className="w-12 h-12 md:w-16 md:h-16 rounded-2xl overflow-hidden shadow-[0_0_30px_rgba(168,85,247,0.3)]">
+                      <img src="/logo.jpg" alt="OCastro Logo" className="w-full h-full object-cover" />
+                    </div>
                   </div>
+
+                  <h1 className="text-2xl md:text-3xl font-bold tracking-tight mb-1 bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">
+                    Olá, Lucas
+                  </h1>
                 </motion.div>
 
-                <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-2 bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">
-                  Olá, Lucas
-                </h1>
-                <p className="text-muted-foreground text-lg">
-                  Como posso ajudar você hoje?
-                </p>
+                {/* Neural Core */}
+                <motion.div
+                  layout
+                  className={`flex items-center justify-center w-full transition-all duration-700 ${isChatMode ? '-mt-4 scale-75' : 'mt-8 scale-100'}`}
+                >
+                  <NeuralInteraction
+                    voiceState={voiceState}
+                    onVoiceToggle={handleVoiceToggle}
+                    conversationHistory={conversationHistory}
+                  />
+                </motion.div>
               </div>
 
-              {/* Neural Core */}
-              <div className="flex-1 flex items-center justify-center w-full mb-12">
-                <NeuralInteraction
-                  voiceState={voiceState}
-                  onVoiceToggle={handleVoiceToggle}
-                  conversationHistory={conversationHistory}
-                />
-              </div>
+              {/* CHAT HISTORY - Only visible in Chat Mode */}
+              {isChatMode && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  className="flex-1 overflow-y-auto mb-4 space-y-4 px-2 min-h-0 scrollbar-thin scrollbar-thumb-white/10 pr-2 w-full max-w-4xl mx-auto"
+                >
+                  {conversationHistory.map((msg, idx) => (
+                    <motion.div
+                      key={idx}
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div
+                        className={`max-w-[80%] p-3 rounded-2xl ${msg.role === 'user'
+                          ? 'bg-primary/20 text-primary-foreground rounded-tr-none border border-primary/20'
+                          : 'bg-secondary/40 text-secondary-foreground rounded-tl-none border border-white/5'
+                          } backdrop-blur-sm shadow-md`}
+                      >
+                        <p className="text-sm md:text-base leading-relaxed">{msg.message}</p>
+                        <span className="text-[10px] opacity-50 mt-1 block">
+                          {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    </motion.div>
+                  ))}
+                  <div ref={scrollAnchorRef} />
+                </motion.div>
+              )}
 
-              {/* Input Bar */}
-              <div className="w-full max-w-2xl mx-auto mt-auto">
+
+              {/* Input Bar - Dynamically positioned */}
+              <motion.div
+                layout
+                className={`w-full max-w-2xl mx-auto transition-all duration-700 ${isChatMode ? 'flex-shrink-0 mb-20' : 'mb-32 mt-8'}`}
+              >
                 <div className="relative flex gap-2">
                   <Input
                     value={inputText}
@@ -110,7 +170,8 @@ const Index = () => {
                     <SendHorizontal className="w-5 h-5" />
                   </Button>
                 </div>
-              </div>
+              </motion.div>
+
             </motion.div>
           )}
 
