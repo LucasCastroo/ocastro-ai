@@ -15,6 +15,8 @@ interface VoiceInteractionReturn {
   simulateInteraction: (userMessage: string) => void;
   lastIntent: string | null;
   lastData: any | null;
+  voiceId: string;
+  setVoiceId: (id: string) => void;
 }
 
 export const useVoiceInteraction = (): VoiceInteractionReturn => {
@@ -23,6 +25,7 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
   const [lastAgentMessage, setLastAgentMessage] = useState('');
   const [lastIntent, setLastIntent] = useState<string | null>(null);
   const [lastData, setLastData] = useState<any | null>(null);
+  const [voiceId, setVoiceId] = useState<string>('pt-BR-AntonioNeural'); // Default
   const [conversationHistory, setConversationHistory] = useState<
     Array<{ role: 'user' | 'agent'; message: string; timestamp: Date }>
   >([]);
@@ -64,6 +67,7 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
         // Prepare Form Data
         const formData = new FormData();
         formData.append('audio', audioBlob, 'command.webm');
+        formData.append('voiceId', voiceId);
 
         try {
           // Get token from storage (assuming standard storage key)
@@ -136,7 +140,7 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
       alert("Não foi possível acessar o microfone. Verifique suas permissões.");
       setVoiceState('idle');
     }
-  }, []);
+  }, [voiceId]);
 
   const stopListening = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -167,7 +171,7 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
       const response = await fetch('http://localhost:5000/api/voice/command', {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ text: userMessage }),
+        body: JSON.stringify({ text: userMessage, voiceId }),
       });
 
       const data = await response.json();
@@ -206,6 +210,8 @@ export const useVoiceInteraction = (): VoiceInteractionReturn => {
     stopListening,
     simulateInteraction,
     lastIntent,
-    lastData
+    lastData,
+    voiceId,
+    setVoiceId
   };
 };

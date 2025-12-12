@@ -13,6 +13,8 @@ def process_voice_command():
     if not current_user_id:
         current_user_id = 1 # Fallback for testing/unauthenticated voice
     
+    voice_id = request.form.get('voiceId')
+    
     # Check if a file is present in the request
     if 'audio' in request.files:
         audio_file = request.files['audio']
@@ -25,7 +27,7 @@ def process_voice_command():
             temp_path = temp_audio.name
             
         try:
-            result = VoiceService.process_audio_command(temp_path, current_user_id)
+            result = VoiceService.process_audio_command(temp_path, current_user_id, voice_id)
         finally:
             # Cleanup upload temp
             try:
@@ -39,13 +41,15 @@ def process_voice_command():
     data = request.get_json(silent=True)
     if data and 'text' in data:
         text = data.get('text')
+        voice_id = data.get('voiceId') # Override from JSON if present
+        
         result = VoiceService.process_text_command(text, current_user_id)
         
         # Generate audio for text input too if requested
         # But usually text input expects text response, unless "Speech Mode" is on.
         # We'll generate it just in case.
         if result.get('trigger_audio'):
-             result['audio_base64'] = VoiceService._generate_audio_response(result['message'])
+             result['audio_base64'] = VoiceService._generate_audio_response(result['message'], voice_id)
              
         return jsonify(result), 200
         

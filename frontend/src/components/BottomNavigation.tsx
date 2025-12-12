@@ -15,7 +15,7 @@ export const BottomNavigation = ({ activeSection, onSectionChange }: BottomNavig
     ];
 
     return (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-background/80 backdrop-blur-lg border border-white/10 rounded-full px-6 py-3 shadow-2xl z-50 flex items-center gap-8">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-background/80 backdrop-blur-lg border border-white/10 rounded-full px-6 py-3 shadow-2xl z-50 flex items-center gap-8 mb-6">
             {items.map((item) => {
                 const Icon = item.icon;
                 const isActive = activeSection === item.id;

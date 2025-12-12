@@ -88,14 +88,21 @@ class VoiceService:
             sys.path.append(usersite)
 
     @staticmethod
-    def _generate_audio_response(text):
+    def _generate_audio_response(text, voice_id=None):
         try:
+            if not text or not text.strip():
+                print("DEBUG: TTS received empty text. Skipping.")
+                return None
+
             VoiceService._ensure_site_packages()
             import edge_tts
             import asyncio
             
-            # Voice: pt-BR-AntonioNeural (Male, Neural quality)
-            VOICE = "pt-BR-AntonioNeural"
+            # Default Voice: pt-BR-AntonioNeural (Male, Neural quality)
+            # Remove any whitespace that might have crept in
+            voice_cleaned = voice_id.strip() if voice_id else "pt-BR-AntonioNeural"
+            
+            print(f"DEBUG: Generating TTS with Voice: '{voice_cleaned}' and Text: '{text[:50]}...'")
             
             # Create temp file
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_mp3:
@@ -103,12 +110,20 @@ class VoiceService:
             
             # Edge TTS is async, so we wrap it
             async def _run_tts():
-                communicate = edge_tts.Communicate(text, VOICE)
+                communicate = edge_tts.Communicate(text, voice_cleaned)
                 await communicate.save(temp_path)
             
             # Run the async function synchronously
-            asyncio.run(_run_tts())
+            try:
+                asyncio.run(_run_tts())
+            except Exception as async_err:
+                print(f"DEBUG: asyncio error in EdgeTTS: {async_err}")
+                raise async_err
             
+            # Verify file size
+            if os.path.getsize(temp_path) == 0:
+                 raise Exception("Generated audio file is empty")
+
             # Read and encode to base64
             with open(temp_path, "rb") as audio_file:
                 audio_bytes = audio_file.read()
@@ -140,6 +155,9 @@ class VoiceService:
                 except:
                     pass
                 return audio_base64
+            except Exception as fallback_err:
+                 print(f"Fallback TTS failed too: {fallback_err}")
+                 return None
             except:
                 return None
 
@@ -149,8 +167,16 @@ class VoiceService:
         from app.extensions import db
         import re
         from datetime import timedelta
+        from app.services.learning_service import LearningService
 
+        text_original = text
         text = text.lower()
+        
+        # 0. APPLY USER VOCABULARY
+        # This replaces user custom synonyms with system keywords
+        # e.g. "detonar tarefa" -> "excluir tarefa"
+        text = LearningService.apply_vocabulary(text, user_id)
+        
         response_text = ""
         intent = "unknown"
         data = None
@@ -196,10 +222,39 @@ class VoiceService:
             return parsed_date
 
         # --- Intent Logic ---
+        
+        # 0. LEARN VOCABULARY (New)
+        # "Aprenda que 'tchau' significa 'sair'"
+        # "Entenda 'riscar' como 'concluir'"
+        if "aprenda que" in text or "entenda" in text and ("significa" in text or "como" in text):
+             intent = "learn_vocabulary"
+             
+             # Regex strategies
+             # 1. "Aprenda que X significa Y"
+             match1 = re.search(r'aprenda que (.+) significa (.+)', text)
+             
+             # 2. "Entenda X como Y"
+             match2 = re.search(r'entenda (.+) como (.+)', text)
+             
+             phrase = None
+             meaning = None
+             
+             if match1:
+                 phrase = match1.group(1).strip().strip("'").strip('"')
+                 meaning = match1.group(2).strip().strip("'").strip('"')
+             elif match2:
+                 phrase = match2.group(1).strip().strip("'").strip('"')
+                 meaning = match2.group(2).strip().strip("'").strip('"')
+                 
+             if phrase and meaning:
+                 LearningService.learn_phrase(user_id, phrase, meaning)
+                 response_text = f"Entendido. Quando você disser '{phrase}', eu vou entender como '{meaning}'."
+             else:
+                 response_text = "Não entendi o que devo aprender. Diga por exemplo: 'Aprenda que riscar significa concluir'."
 
         # 1. CREATE TASK
         # Pattern: "nova tarefa [titulo] [metadata]"
-        if "nova tarefa" in text or "adicionar tarefa" in text or "criar tarefa" in text:
+        elif "nova tarefa" in text or "adicionar tarefa" in text or "criar tarefa" in text:
             intent = "create_task"
             
             # Default values
@@ -267,7 +322,7 @@ class VoiceService:
                 response_text = "Entendi que você quer criar uma tarefa, mas não ouvi o título claramente."
 
         # 2a. LIST ALL TASKS
-        elif "todas" in text and "tarefas" in text:
+        elif "todas" in text and "tarefas" in text and not any(x in text for x in ["excluir", "deletar", "apagar", "limpar"]):
             intent = "list_all_tasks"
             # Get pending tasks first
             tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).order_by(Task.due_date).limit(5).all()
@@ -311,42 +366,79 @@ class VoiceService:
 
         # 3. COMPLETE TASK
         # Pattern: "concluir tarefa [titulo]" or "marcar [titulo] como feita"
-        elif "concluir" in text or "terminar" in text or "feita" in text:
+        elif "concluir" in text or "terminar" in text or "feita" in text or "riscar" in text:
             intent = "complete_task"
+            from app.utils.string_utils import find_best_match
             
             pending_tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).all()
             
-            found = False
-            for task in pending_tasks:
-                if task.title.lower() in text:
-                    task.status = TaskStatus.CONCLUIDA
-                    db.session.commit()
-                    response_text = f"Pronto! Marquei a tarefa {task.title} como concluída."
-                    found = True
-                    break
+            clean_text = text
+            # Clean common command words to isolate title
+            clean_text = re.sub(r'\b(concluir|terminar|finalizar|marcar|como|feita|a|tarefa|de|da|o)\b', ' ', clean_text).strip()
+            possible_title = clean_text
             
-            if not found:
+            target_task = None
+            
+            # 1. Fuzzy match
+            task_options = [(t, t.title) for t in pending_tasks]
+            # Lower threshold slightly for "concluir" as it's often quick
+            target_task = find_best_match(possible_title, task_options, threshold=0.65)
+            
+            # 2. Substring fallback
+            if not target_task:
+                 for task in pending_tasks:
+                    # If spoken title is inside real title (e.g "lançar notas")
+                    if possible_title and possible_title in task.title.lower() and len(possible_title) > 3:
+                        target_task = task
+                        break
+                    # If real title is inside spoken text (handled by regex cleaning usually, but for safety)
+                    if task.title.lower() in text: 
+                        target_task = task
+                        break
+            
+            if target_task:
+                target_task.status = TaskStatus.CONCLUIDA
+                db.session.commit()
+                response_text = f"Pronto! Marquei a tarefa {target_task.title} como concluída."
+            else:
                 response_text = "Não encontrei essa tarefa pendente. Pode repetir o nome exato?"
 
         # 4. MOVE TO DOING (Start task)
         elif "começar" in text or "iniciar" in text or "fazendo" in text:
             intent = "start_task"
+            from app.utils.string_utils import find_best_match
+            
             pending_tasks = Task.query.filter(Task.user_id==user_id, Task.status == TaskStatus.ENTRADA).all()
             
-            found = False
-            for task in pending_tasks:
-                if task.title.lower() in text:
-                    task.status = TaskStatus.FAZENDO
-                    db.session.commit()
-                    response_text = f"Ótimo. Movi {task.title} para Fazendo."
-                    found = True
-                    break
+            clean_text = text
+            clean_text = re.sub(r'\b(começar|iniciar|colocar|em|fazendo|a|tarefa|de|da)\b', ' ', clean_text).strip()
+            possible_title = clean_text
             
-            if not found:
+            target_task = None
+            
+            # 1. Fuzzy match
+            task_options = [(t, t.title) for t in pending_tasks]
+            target_task = find_best_match(possible_title, task_options, threshold=0.7)
+            
+            if not target_task:
+                 for task in pending_tasks:
+                     if possible_title and possible_title in task.title.lower() and len(possible_title) > 3:
+                        target_task = task
+                        break
+                     if task.title.lower() in text:
+                        target_task = task
+                        break
+
+            if target_task:
+                target_task.status = TaskStatus.FAZENDO
+                db.session.commit()
+                response_text = f"Ótimo. Movi {target_task.title} para Fazendo."
+            else:
                 response_text = "Não encontrei essa tarefa na Entrada para iniciar."
 
         # 5. CHANGE STATUS (NEW)
-        elif "status" in text and ("mudar" in text or "alterar" in text or "definir" in text):
+        # 5. CHANGE STATUS (NEW)
+        elif "status" in text and ("mudar" in text or "alterar" in text or "definir" in text or "atualizar" in text):
             intent = "update_task_status"
             
             # 1. Determine Target Status
@@ -367,7 +459,7 @@ class VoiceService:
                 # 2. Extract Task Title
                 clean_text = text
                 # Remove command verbs
-                clean_text = re.sub(r'(altere|mudar|definir) o status (da|de) (tarefa )?', '', clean_text)
+                clean_text = re.sub(r'(altere|mudar|definir|atualizar) o status (da|de|na|no) (tarefa )?', '', clean_text)
                 # Remove target status phrases
                 clean_text = re.sub(r'para (em )?andamento', '', clean_text)
                 clean_text = re.sub(r'para (fazendo|feita|concluída|concluida|terminada|entrada|pendente)', '', clean_text)
@@ -378,11 +470,10 @@ class VoiceService:
                 all_tasks = Task.query.filter_by(user_id=user_id).all()
                 target_task = None
                 
-                # Search strategy: exact > task_in_speech > speech_in_task
-                for task in all_tasks:
-                   if task.title.lower() == possible_title:
-                       target_task = task
-                       break
+                # Use fuzzy match
+                from app.utils.string_utils import find_best_match
+                task_options = [(t, t.title) for t in all_tasks]
+                target_task = find_best_match(possible_title, task_options, threshold=0.7)
                 
                 if not target_task:
                     for task in all_tasks:
@@ -390,8 +481,8 @@ class VoiceService:
                         if possible_title and possible_title in task.title.lower() and len(possible_title) > 3:
                             target_task = task
                             break
-                        # If the real title is in the speech (reverse case, less likely here due to stripping)
-                        if task.title.lower() in possible_title:
+                        # If the real title is in the speech (reverse case)
+                        if task.title.lower() in text:
                             target_task = task
                             break
                             
@@ -405,86 +496,124 @@ class VoiceService:
                 response_text = "Entendi que quer mudar o status, mas para qual? Você pode dizer: fazendo, concluída ou entrada."
 
         # 6. UPDATE DATE
-        elif "mudar" in text or "alterar" in text or "prazo" in text or "para o dia" in text:
+        # Keywords: mudar, alterar, definir, agendar, postergar, antecipar + data/prazo
+        elif ("mudar" in text or "alterar" in text or "definir" in text or "agendar" in text or "prazo" in text) and ("data" in text or "prazo" in text or "dia" in text or "para" in text):
             intent = "update_task_date"
+            from app.utils.string_utils import find_best_match
             
-            # Find the task first
-            pending_tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).all()
-            target_task = None
-            for task in pending_tasks:
-                if task.title.lower() in text:
-                    target_task = task
-                    break
-            
-            if target_task:
-                new_date = None
-                
-                # Check for "amanhã" or "hoje"
-                if "amanhã" in text:
-                    new_date = date.today() + timedelta(days=1)
-                elif "hoje" in text:
-                    new_date = date.today()
-                else:
-                    # Regex for "dia X" or "dia X de [mes]"
-                    # Mapping months
-                    months = {
-                        "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
-                        "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
-                    }
-                    
-                    # Try explicit date pattern: "dia 7 de dezembro"
-                    date_match = re.search(r'dia\s+(\d+)\s+de\s+(\w+)', text)
-                    if date_match:
-                        day = int(date_match.group(1))
-                        month_name = date_match.group(2)
+            new_date = None
+            date_str_found = ""
+
+            # 1. Parsing Date Logic
+            months = {
+                "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
+                "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
+            }
+
+            if "amanhã" in text:
+                new_date = date.today() + timedelta(days=1)
+                date_str_found = "amanhã"
+            elif "hoje" in text:
+                new_date = date.today()
+                date_str_found = "hoje"
+            else:
+                # Regex for "20 de dezembro", "dia 20 de dezembro", "20/12"
+                # Matches: (dia )?(\d+) (de )?(\w+)
+                date_match = re.search(r'(dia\s+)?(\d+)\s+de\s+(\w+)', text)
+                if date_match:
+                    try:
+                        day = int(date_match.group(2))
+                        month_name = date_match.group(3)
                         month = months.get(month_name)
                         if month:
-                            # Assuming current year if month is ahead, or next year if month is passed? 
-                            # Simplification: use current year, or next year if date passed
                             today = date.today()
                             year = today.year
-                            try:
-                                candidate_date = date(year, month, day)
-                                if candidate_date < today:
-                                    candidate_date = date(year + 1, month, day)
-                                new_date = candidate_date
-                            except ValueError:
-                                pass
-                    
-                    if not new_date:
-                        # Try just "dia X"
-                        date_match_simple = re.search(r'dia\s+(\d+)', text)
-                        if date_match_simple:
+                            candidate = date(year, month, day)
+                            if candidate < today: candidate = date(year + 1, month, day)
+                            new_date = candidate
+                            date_str_found = date_match.group(0)
+                    except: pass
+                
+                if not new_date:
+                     # Simpler regex "dia 20" or just "20" (riskier, assumes prior keywords filtered context)
+                     # Let's stick to "dia 20" for safety or look for patterns after "para"
+                     date_match_simple = re.search(r'dia\s+(\d+)', text)
+                     if date_match_simple:
+                        try:
                             day = int(date_match_simple.group(1))
                             today = date.today()
-                            # Use current month or next month logic could be complex, assume current month/next match
-                            try:
-                                candidate_date = date(today.year, today.month, day)
-                                if candidate_date < today:
-                                    # Try next month
-                                    next_month = today.month + 1 if today.month < 12 else 1
-                                    next_year = today.year if today.month < 12 else today.year + 1
-                                    candidate_date = date(next_year, next_month, day)
-                                new_date = candidate_date
-                            except ValueError:
-                                pass
-                if new_date:
+                            candidate = date(today.year, today.month, day)
+                            if candidate < today: 
+                                # Move to next month
+                                m = today.month + 1 if today.month < 12 else 1
+                                y = today.year if today.month < 12 else today.year + 1
+                                candidate = date(y, m, day)
+                            new_date = candidate
+                            date_str_found = date_match_simple.group(0)
+                        except: pass
+
+            if new_date:
+                # 2. Extract Task Title
+                # Remove the found date string
+                clean_text = text.replace(date_str_found, "")
+                
+                # Remove command keywords
+                # "altere a tarefa acordar ... para o prazo de ..." -> "acordar"
+                clean_text = re.sub(r'(alterar|altere|mudar|definir|agendar|nova data|o prazo|a data|prazo|data|para|de|da|do|na|no|tarefa)', ' ', clean_text)
+                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                
+                possible_title = clean_text
+                
+                # 3. Find Task (Fuzzy)
+                pending_tasks = Task.query.filter(Task.user_id==user_id, Task.status != TaskStatus.CONCLUIDA).all()
+                task_options = [(t, t.title) for t in pending_tasks]
+                
+                target_task = find_best_match(possible_title, task_options, threshold=0.6)
+                
+                # Fallback: Substring
+                if not target_task and possible_title:
+                     for task in pending_tasks:
+                        if possible_title in task.title.lower():
+                            target_task = task
+                            break
+                            
+                if target_task:
                     target_task.due_date = new_date
                     db.session.commit()
-                    response_text = f"Atualizei a data da tarefa {target_task.title} para {new_date.strftime('%d/%m')}."
+                    response_text = f"Entendido. Alterei a data de '{target_task.title}' para {new_date.strftime('%d/%m')}."
                 else:
-                    response_text = f"Encontrei a tarefa {target_task.title}, mas não entendi a nova data."
+                    # Try finding ANY task if the title was completely eaten by regex
+                    # (Fallback for "mudar data da ultima tarefa") - Optional, skipping for now to strictness
+                    response_text = f"Entendi a data ({new_date.strftime('%d/%m')}), mas não encontrei a tarefa '{possible_title}'."
             else:
-                response_text = "Não encontrei a tarefa que você quer alterar."
+                 response_text = "Não consegui identificar para qual data você quer mudar."
+
+        # 7a. DELETE ALL TASKS
+        elif "tarefas" in text and "todas" in text and ("excluir" in text or "deletar" in text or "limpar" in text or "apagar" in text):
+             intent = "delete_all_tasks"
+             
+             # Delete all tasks for the user
+             try:
+                 num_deleted = Task.query.filter_by(user_id=user_id).delete()
+                 db.session.commit()
+                 if num_deleted > 0:
+                     response_text = f"Entendido. Excluí todas as suas {num_deleted} tarefas."
+                 else:
+                     response_text = "Você não tem tarefas para excluir."
+                 data = {"deleted_count": num_deleted}
+             except Exception as e:
+                 db.session.rollback()
+                 response_text = "Tive um problema ao excluir todas as tarefas."
 
         # 7. DELETE TASK
-        elif "excluir" in text or "deletar" in text or "remover" in text:
+        elif "excluir" in text or "deletar" in text or "remover" in text or "apagar" in text:
             intent = "delete_task"
+            from app.utils.string_utils import find_best_match
             
             # Clean text to isolate title
             # "excluir tarefa de lançar frequência" -> "lançar frequência"
             clean_text = text
-            clean_text = re.sub(r'(excluir|deletar|remover) (a )?tarefa (de )?', '', clean_text)
+            clean_text = re.sub(r'(excluir|deletar|remover|apagar) (a )?tarefa (de )?', '', clean_text)
             
             possible_title = clean_text.strip()
             
@@ -492,12 +621,17 @@ class VoiceService:
                 all_tasks = Task.query.filter_by(user_id=user_id).all()
                 target_task = None
                 
-                # Search strategy same as update status
-                for task in all_tasks:
-                   if task.title.lower() == possible_title:
-                       target_task = task
-                       break
+                # 1. Prepare options for fuzzy search: (task, task.title)
+                # We interpret "listar frequência" -> should match "Lançar frequência"
+                # Similarity of "listar" and "lançar" is high.
                 
+                task_options = [(t, t.title) for t in all_tasks]
+                
+                # 2. Try Fuzzy Match (Threshold 0.6 is generous, maybe 0.7 for safety)
+                # "ouvir tarefa de ler livro..." -> "ler livro..." vs "Ler livro do Pablo..."
+                target_task = find_best_match(possible_title, task_options, threshold=0.7)
+                
+                # 3. Fallback: Substring Search if fuzzy fails
                 if not target_task:
                     for task in all_tasks:
                         if possible_title in task.title.lower() and len(possible_title) > 3:
@@ -596,7 +730,7 @@ class VoiceService:
         }
 
     @classmethod
-    def process_audio_command(cls, audio_file_path, user_id):
+    def process_audio_command(cls, audio_file_path, user_id, voice_id=None):
         # 1. Transcribe
         transcribed_text = cls._transcribe_audio(audio_file_path)
         
@@ -604,14 +738,14 @@ class VoiceService:
             return {
                 "success": False,
                 "message": "Não consegui ouvir nada. Tente novamente.",
-                "audio_base64": cls._generate_audio_response("Não consegui ouvir nada. Tente novamente.")
+                "audio_base64": cls._generate_audio_response("Não consegui ouvir nada. Tente novamente.", voice_id)
             }
             
         # 2. Process Intent
         result = cls.process_text_command(transcribed_text, user_id)
         
         # 3. Generate Audio Response
-        audio_base64 = cls._generate_audio_response(result['message'])
+        audio_base64 = cls._generate_audio_response(result['message'], voice_id)
         
         result['audio_base64'] = audio_base64
         result['transcription'] = transcribed_text

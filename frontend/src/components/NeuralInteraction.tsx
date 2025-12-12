@@ -169,6 +169,8 @@ export const NeuralInteraction = ({
                 transition={{ duration: 1.2, repeat: Infinity, delay: 0.3 }}
               />
             )}
+
+
           </svg>
 
           {/* Overlay Icon status - invisible click target */}
@@ -180,7 +182,15 @@ export const NeuralInteraction = ({
 
       {/* Live Transcription / Last Message Display */}
       <div className="h-20 flex items-center justify-center text-center px-4 max-w-lg z-20">
-        {lastAgentMessage ? (
+        {voiceState === 'thinking' ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex items-center gap-2 text-primary animate-pulse"
+          >
+            <span className="text-lg font-medium">Processando...</span>
+          </motion.div>
+        ) : lastAgentMessage ? (
           <motion.p
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
